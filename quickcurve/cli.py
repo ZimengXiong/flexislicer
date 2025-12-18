@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from quickcurve.prusa import (
+    export_deformed_stl,
+    flatten_stl_bottom,
+    resolve_prusaslicer_cli,
+    run_prusaslicer_export_gcode,
+    warp_gcode_with_surface,
+)
+from quickcurve.solver import QuickCurveConfig, run_quickcurve, save_result
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="QuickCurve reference implementation (Python)."
+    )
+    p.add_argument("--mesh", required=True, help="Input watertight mesh (STL/OBJ/PLY/...).")
+    p.add_argument("--out", required=True, help="Output directory.")
+
+    p.add_argument("--grid-step", type=float, default=0.5, help="XY raster step in mm.")
+    p.add_argument("--layer-height", type=float, default=0.2, help="Layer height in mm.")
+    p.add_argument(
+        "--theta-target",
+        type=float,
+        default=27.0,
+        help="Target slope used for gradient steepening (degrees).",
+    )
+    p.add_argument(
+        "--theta-max",
+        type=float,
+        default=40.0,
+        help="Maximum conical slope for post-process validity (degrees).",
+    )
+    p.add_argument(
+        "--filter-radius",
+        type=float,
+        default=0.0,
+        help="Optional morphological closure radius for Theta mask (mm).",
+    )
+    p.add_argument(
+        "--max-post-iters",
+        type=int,
+        default=200,
+        help="Maximum post-process iterations.",
+    )
+    p.add_argument(
+        "--max-layers",
+        type=int,
+        default=None,
+        help="Optional cap on number of generated layers.",
+    )
+
+    p.add_argument("--w-gradient", type=float, default=1.0, help="Gradient objective weight.")
+    p.add_argument("--w-boundary", type=float, default=3.0, help="Boundary objective weight.")
+    p.add_argument("--w-smooth", type=float, default=0.05, help="Smoothness objective weight.")
+    p.add_argument(
+        "--w-component-reg",
+        type=float,
+        default=1e-3,
+        help="Weak component offset regularization weight.",
+    )
+    p.add_argument(
+        "--deformed-stl",
+        default=None,
+        help="Path to write intermediate deformed STL (default: <out>/deformed_for_prusaslicer.stl).",
+    )
+    p.add_argument(
+        "--gcode-out",
+        default=None,
+        help="Path for final non-planar warped G-code. Enables PrusaSlicer pipeline.",
+    )
+    p.add_argument(
+        "--prusaslicer-cli",
+        default="/applications/prusaslicer",
+        help="PrusaSlicer CLI path (default: /applications/prusaslicer; app bundle fallback is automatic).",
+    )
+    p.add_argument(
+        "--prusaslicer-profile",
+        default=None,
+        help="Optional PrusaSlicer config/profile file passed via --load.",
+    )
+    p.add_argument(
+        "--prusaslicer-first-layer-height",
+        type=float,
+        default=0.2,
+        help="PrusaSlicer first layer height in mm (default: 0.2). Set <=0 to leave unchanged.",
+    )
+    p.add_argument(
+        "--prusaslicer-extra",
+        action="append",
+        default=[],
+        help="Extra argument to pass to PrusaSlicer (repeatable).",
+    )
+    p.add_argument(
+        "--keep-prusaslicer-gcode",
+        default=None,
+        help="Optional path to keep the intermediate planar G-code from the deformed STL.",
+    )
+    p.add_argument(
+        "--warp-shift-x",
+        type=float,
+        default=None,
+        help="Optional manual X shift applied to G-code XY before sampling the surface.",
+    )
+    p.add_argument(
+        "--warp-shift-y",
+        type=float,
+        default=None,
+        help="Optional manual Y shift applied to G-code XY before sampling the surface.",
+    )
+    p.add_argument(
+        "--no-warp-auto-align",
+        action="store_true",
+        help="Disable automatic XY alignment between gcode coordinates and surface grid.",
+    )
+    p.add_argument(
+        "--no-z-bed-anchor",
+        action="store_true",
+        help="Disable automatic Z anchor removal (may cause floating first layer).",
+    )
+    p.add_argument(
+        "--preserve-planar-layers",
+        type=int,
+        default=1,
+        help="Keep the first N sliced layers fully planar before non-planar warping.",
+    )
+    p.add_argument(
+        "--warp-transition-layers",
+        type=int,
+        default=4,
+        help="Blend from planar to full non-planar over this many layers after preserved layers.",
+    )
+
+    return p
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    if (args.warp_shift_x is None) != (args.warp_shift_y is None):
+        raise ValueError("Provide both --warp-shift-x and --warp-shift-y, or neither.")
+    if args.preserve_planar_layers < 0:
+        raise ValueError("--preserve-planar-layers must be >= 0")
+    if args.warp_transition_layers < 0:
+        raise ValueError("--warp-transition-layers must be >= 0")
+
+    cfg = QuickCurveConfig(
+        grid_step=args.grid_step,
+        layer_height=args.layer_height,
+        theta_target_deg=args.theta_target,
+        theta_max_deg=args.theta_max,
+        filter_radius_mm=args.filter_radius,
+        max_post_iters=args.max_post_iters,
+        max_layers=args.max_layers,
+        w_gradient=args.w_gradient,
+        w_boundary=args.w_boundary,
+        w_smooth=args.w_smooth,
+        w_component_reg=args.w_component_reg,
+    )
+
+    result = run_quickcurve(Path(args.mesh), cfg)
+    out_dir = Path(args.out)
+    save_result(result, cfg, out_dir)
+
+    deformed_stl_path: Path | None = None
+    if args.deformed_stl is not None or args.gcode_out is not None:
+        deformed_stl_path = Path(args.deformed_stl) if args.deformed_stl else out_dir / "deformed_for_prusaslicer.stl"
+        export_deformed_stl(
+            input_mesh_path=Path(args.mesh),
+            result=result,
+            out_stl_path=deformed_stl_path,
+            layer_height=cfg.layer_height,
+            preserve_planar_layers=args.preserve_planar_layers,
+            transition_layers=args.warp_transition_layers,
+        )
+
+    warped_gcode_path: Path | None = None
+    if args.gcode_out is not None:
+        cli_path = resolve_prusaslicer_cli(args.prusaslicer_cli)
+        planar_gcode = (
+            Path(args.keep_prusaslicer_gcode)
+            if args.keep_prusaslicer_gcode
+            else out_dir / "planar_from_deformed.gcode"
+        )
+        base_extra_args = list(args.prusaslicer_extra)
+        inject_first_layer = (
+            args.prusaslicer_first_layer_height is not None
+            and args.prusaslicer_first_layer_height > 0.0
+            and not any(str(a).startswith("--first-layer-height") for a in args.prusaslicer_extra)
+        )
+        full_extra_args = (
+            base_extra_args + [f"--first-layer-height={args.prusaslicer_first_layer_height:.5f}"]
+            if inject_first_layer
+            else base_extra_args
+        )
+        try:
+            run_prusaslicer_export_gcode(
+                prusaslicer_cli=cli_path,
+                input_stl=deformed_stl_path,
+                output_gcode=planar_gcode,
+                profile_path=args.prusaslicer_profile,
+                extra_args=full_extra_args,
+            )
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if inject_first_layer and "no extrusions in the first layer" in msg:
+                flh = float(args.prusaslicer_first_layer_height)
+                flatten_depths = [flh, 1.25 * flh, 1.5 * flh, 2.0 * flh, 3.0 * flh]
+                sliced = False
+                for depth in flatten_depths:
+                    flat_stl = out_dir / f"deformed_for_prusaslicer_flat_{depth:.3f}mm.stl"
+                    flatten_stl_bottom(
+                        input_stl=deformed_stl_path,
+                        output_stl=flat_stl,
+                        flatten_depth_mm=depth,
+                    )
+                    try:
+                        run_prusaslicer_export_gcode(
+                            prusaslicer_cli=cli_path,
+                            input_stl=flat_stl,
+                            output_gcode=planar_gcode,
+                            profile_path=args.prusaslicer_profile,
+                            extra_args=full_extra_args,
+                        )
+                        print(
+                            "Warning: auto-flattened deformed STL bottom by "
+                            f"{depth:.3f} mm to ensure first-layer-height {flh:.3f} has printable area."
+                        )
+                        sliced = True
+                        break
+                    except RuntimeError as e_flat:
+                        msg_flat = str(e_flat).lower()
+                        if "no extrusions in the first layer" not in msg_flat:
+                            raise
+
+                if not sliced:
+                    print(
+                        "Warning: Could not enforce first-layer-height "
+                        f"{args.prusaslicer_first_layer_height:.3f} on this geometry; retrying without override."
+                    )
+                    run_prusaslicer_export_gcode(
+                        prusaslicer_cli=cli_path,
+                        input_stl=deformed_stl_path,
+                        output_gcode=planar_gcode,
+                        profile_path=args.prusaslicer_profile,
+                        extra_args=base_extra_args,
+                    )
+            else:
+                raise
+        warped_gcode_path = warp_gcode_with_surface(
+            input_gcode=planar_gcode,
+            output_gcode=Path(args.gcode_out),
+            result=result,
+            xy_shift=(
+                (args.warp_shift_x, args.warp_shift_y)
+                if args.warp_shift_x is not None and args.warp_shift_y is not None
+                else None
+            ),
+            auto_align_xy=not args.no_warp_auto_align,
+            z_anchor_to_bed=not args.no_z_bed_anchor,
+            preserve_planar_layers=args.preserve_planar_layers,
+            transition_layers=args.warp_transition_layers,
+        )
+
+    print("QuickCurve run completed.")
+    print(f"Output directory: {args.out}")
+    print(f"Grid: {result.stats['grid_shape']} @ {cfg.grid_step} mm")
+    print(f"Valid samples: {result.stats['num_valid']}")
+    print(f"Theta samples: {result.stats['num_theta']}")
+    print(f"Connected components: {result.stats['num_components']}")
+    print(f"Layers with contours: {result.stats['num_layers_with_paths']}")
+    if deformed_stl_path is not None:
+        print(f"Deformed STL: {deformed_stl_path}")
+    if warped_gcode_path is not None:
+        print(f"Warped G-code: {warped_gcode_path}")
+
+
+if __name__ == "__main__":
+    main()
