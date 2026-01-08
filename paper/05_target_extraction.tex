@@ -1,0 +1,5 @@
+\section{Target Extraction}
+
+We cast vertical rays on an XY grid and sort all mesh intersections by height. The highest valid hit defines the outer target map. The next lower hit, subject to minimum and optional maximum gap thresholds, defines the second-hit candidate map.
+
+Second-hit extraction is useful precisely where it is noisy, so the raw map is filtered by local slope thresholding, connected-component cleanup, and simple morphology. The resulting terrace mask identifies where the low anchor is allowed to deviate from the high anchor. Outside this region, the recommended default is hard coupling `S_{\text{low}} = S_{\text{high}}`.
