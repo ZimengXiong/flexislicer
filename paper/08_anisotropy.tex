@@ -1,0 +1,5 @@
+\section{Anisotropy-Aware Objective}
+
+FlexSlicer is intended as a platform rather than a single fixed objective. To demonstrate extensibility without abandoning the practical solver structure, we add an anisotropy-aware term that steers interface orientation toward a prescribed in-plane stress direction field.
+
+The key design constraint is to remain in least-squares form. We therefore encode anisotropy as a directional weighting on anchor-field gradients rather than introducing a new nonlinear solve. This lets the method steer layer normals while keeping the geometric alignment machinery intact.
