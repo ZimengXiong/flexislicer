@@ -28,6 +28,13 @@ class QuickCurveConfig:
     w_component_reg: float = 1e-3
     max_layers: int | None = None
 
+    # FlexSlicer extension
+    flex_k: int = 2
+    terrace_min_gap_mm: float = 0.6
+    terrace_max_gap_mm: float | None = None
+    flex_blend_start_frac: float = 0.2
+    flex_blend_end_frac: float = 0.85
+
     @property
     def h_target(self) -> float:
         return self.grid_step * math.tan(math.radians(self.theta_target_deg))
@@ -42,11 +49,23 @@ class QuickCurveResult:
     x_coords: np.ndarray
     y_coords: np.ndarray
     top_z: np.ndarray
+    terrace_z: np.ndarray
     valid_mask: np.ndarray
+    terrace_mask: np.ndarray
     theta_mask: np.ndarray
     labels: np.ndarray
+    theta_mask_low: np.ndarray
+    theta_mask_high: np.ndarray
+    labels_low: np.ndarray
+    labels_high: np.ndarray
     raw_surface: np.ndarray
     final_surface: np.ndarray
+    raw_surface_low: np.ndarray
+    raw_surface_high: np.ndarray
+    final_surface_low: np.ndarray
+    final_surface_high: np.ndarray
+    anisotropy_angle: np.ndarray
+    anisotropy_strength: np.ndarray
     layers: list[dict[str, Any]]
     stats: dict[str, Any]
 
@@ -120,7 +139,7 @@ def _load_mesh(path: str | Path) -> trimesh.Trimesh:
 
 def _sample_mesh_to_grid(mesh: trimesh.Trimesh, step: float) -> dict[str, Any]:
     bounds = mesh.bounds
-    x_min, y_min, z_min = bounds[0]
+    x_min, y_min, _ = bounds[0]
     x_max, y_max, z_max = bounds[1]
 
     nx = int(np.floor((x_max - x_min) / step)) + 1
@@ -173,6 +192,36 @@ def _sample_mesh_to_grid(mesh: trimesh.Trimesh, step: float) -> dict[str, Any]:
         "bounds": bounds,
         "step": step,
     }
+
+
+def _extract_terrace_z(
+    ray_hits: list[np.ndarray],
+    top_z: np.ndarray,
+    valid_mask: np.ndarray,
+    min_gap_mm: float,
+    max_gap_mm: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    terrace = np.full_like(top_z, np.nan)
+    top_flat = top_z.reshape(-1)
+    valid_flat = valid_mask.reshape(-1)
+    terrace_flat = terrace.reshape(-1)
+
+    for rid, hits in enumerate(ray_hits):
+        if not valid_flat[rid] or hits.size < 2:
+            continue
+        z_top = float(top_flat[rid])
+        hi = z_top - min_gap_mm
+        if max_gap_mm is None or max_gap_mm <= min_gap_mm:
+            lo = -np.inf
+        else:
+            lo = z_top - max_gap_mm
+        candidates = hits[(hits <= hi) & (hits >= lo)]
+        if candidates.size == 0:
+            continue
+        terrace_flat[rid] = float(candidates[-1])
+
+    terrace_mask = np.isfinite(terrace)
+    return terrace, terrace_mask
 
 
 def _build_theta_map(
@@ -414,6 +463,16 @@ def _extract_layers(
     return layers
 
 
+def _compute_anisotropy_fields(surface: np.ndarray, valid_mask: np.ndarray, step: float) -> tuple[np.ndarray, np.ndarray]:
+    filled = _fill_nans_nearest(surface)
+    gy, gx = np.gradient(filled, step, step)
+    angle = np.arctan2(gy, gx)
+    strength = np.hypot(gx, gy)
+    angle = np.where(valid_mask, angle, np.nan)
+    strength = np.where(valid_mask, strength, np.nan)
+    return angle, strength
+
+
 def run_quickcurve(mesh_path: str | Path, cfg: QuickCurveConfig) -> QuickCurveResult:
     mesh = _load_mesh(mesh_path)
 
@@ -422,8 +481,9 @@ def run_quickcurve(mesh_path: str | Path, cfg: QuickCurveConfig) -> QuickCurveRe
     y_coords = sampled["y_coords"]
     top_z = sampled["top_z"]
     valid_mask = sampled["valid_mask"]
+    bounds = sampled["bounds"]
 
-    theta_mask, labels = _build_theta_map(
+    theta_mask_high, labels_high = _build_theta_map(
         top_z=top_z,
         valid_mask=valid_mask,
         step=cfg.grid_step,
@@ -431,20 +491,75 @@ def run_quickcurve(mesh_path: str | Path, cfg: QuickCurveConfig) -> QuickCurveRe
         filter_radius_mm=cfg.filter_radius_mm,
     )
 
-    raw_surface = _solve_slice_surface(
+    raw_surface_high = _solve_slice_surface(
         top_z=top_z,
         valid_mask=valid_mask,
-        theta_mask=theta_mask,
-        labels=labels,
+        theta_mask=theta_mask_high,
+        labels=labels_high,
         cfg=cfg,
     )
 
-    final_surface = _enforce_postprocess(
-        h=raw_surface,
+    final_surface_high = _enforce_postprocess(
+        h=raw_surface_high,
         valid_mask=valid_mask,
         h_max=cfg.h_max,
         max_iters=cfg.max_post_iters,
     )
+
+    terrace_z = np.full_like(top_z, np.nan)
+    terrace_mask = np.zeros_like(valid_mask, dtype=bool)
+    theta_mask_low = theta_mask_high.copy()
+    labels_low = labels_high.copy()
+    raw_surface_low = raw_surface_high.copy()
+    final_surface_low = final_surface_high.copy()
+
+    use_flex_k2 = int(cfg.flex_k) >= 2
+    if use_flex_k2:
+        terrace_z, terrace_mask = _extract_terrace_z(
+            ray_hits=sampled["ray_hits"],
+            top_z=top_z,
+            valid_mask=valid_mask,
+            min_gap_mm=max(0.0, cfg.terrace_min_gap_mm),
+            max_gap_mm=cfg.terrace_max_gap_mm,
+        )
+
+        if int(np.count_nonzero(terrace_mask)) >= 8:
+            theta_mask_low, labels_low = _build_theta_map(
+                top_z=terrace_z,
+                valid_mask=terrace_mask,
+                step=cfg.grid_step,
+                theta_target_deg=cfg.theta_target_deg,
+                filter_radius_mm=cfg.filter_radius_mm,
+            )
+
+            raw_low_sparse = _solve_slice_surface(
+                top_z=terrace_z,
+                valid_mask=terrace_mask,
+                theta_mask=theta_mask_low,
+                labels=labels_low,
+                cfg=cfg,
+            )
+
+            final_low_sparse = _enforce_postprocess(
+                h=raw_low_sparse,
+                valid_mask=terrace_mask,
+                h_max=cfg.h_max,
+                max_iters=cfg.max_post_iters,
+            )
+
+            raw_surface_low = raw_low_sparse.copy()
+            final_surface_low = final_low_sparse.copy()
+
+            fill_valid = valid_mask & ~np.isfinite(final_surface_low)
+            final_surface_low[fill_valid] = final_surface_high[fill_valid]
+
+            fill_raw = valid_mask & ~np.isfinite(raw_surface_low)
+            raw_surface_low[fill_raw] = raw_surface_high[fill_raw]
+        else:
+            use_flex_k2 = False
+
+    final_surface = final_surface_high.copy()
+    raw_surface = raw_surface_high.copy()
 
     layers = _extract_layers(
         h=final_surface,
@@ -452,30 +567,63 @@ def run_quickcurve(mesh_path: str | Path, cfg: QuickCurveConfig) -> QuickCurveRe
         x_coords=x_coords,
         y_coords=y_coords,
         ray_hits=sampled["ray_hits"],
-        bounds=sampled["bounds"],
+        bounds=bounds,
         cfg=cfg,
+    )
+
+    z_min, z_max = float(bounds[0, 2]), float(bounds[1, 2])
+    span = max(1e-6, z_max - z_min)
+    blend_start_frac = float(np.clip(cfg.flex_blend_start_frac, 0.0, 1.0))
+    blend_end_frac = float(np.clip(cfg.flex_blend_end_frac, 0.0, 1.0))
+    if blend_end_frac <= blend_start_frac:
+        blend_end_frac = min(1.0, blend_start_frac + 0.3)
+    blend_z_start = z_min + blend_start_frac * span
+    blend_z_end = z_min + blend_end_frac * span
+
+    anisotropy_angle, anisotropy_strength = _compute_anisotropy_fields(
+        surface=final_surface_high,
+        valid_mask=valid_mask,
+        step=cfg.grid_step,
     )
 
     stats = {
         "grid_shape": list(top_z.shape),
         "grid_step": cfg.grid_step,
         "num_valid": int(np.count_nonzero(valid_mask)),
-        "num_theta": int(np.count_nonzero(theta_mask)),
-        "num_components": int(np.max(labels)),
+        "num_theta": int(np.count_nonzero(theta_mask_high)),
+        "num_components": int(np.max(labels_high)),
         "num_layers_with_paths": len(layers),
         "mesh_faces": int(mesh.faces.shape[0]),
         "mesh_vertices": int(mesh.vertices.shape[0]),
+        "flex_k": 2 if use_flex_k2 else 1,
+        "num_terrace": int(np.count_nonzero(terrace_mask)),
+        "mesh_z_min": z_min,
+        "mesh_z_max": z_max,
+        "blend_z_start": float(blend_z_start),
+        "blend_z_end": float(blend_z_end),
     }
 
     return QuickCurveResult(
         x_coords=x_coords,
         y_coords=y_coords,
         top_z=top_z,
+        terrace_z=terrace_z,
         valid_mask=valid_mask,
-        theta_mask=theta_mask,
-        labels=labels,
+        terrace_mask=terrace_mask,
+        theta_mask=theta_mask_high,
+        labels=labels_high,
+        theta_mask_low=theta_mask_low,
+        theta_mask_high=theta_mask_high,
+        labels_low=labels_low,
+        labels_high=labels_high,
         raw_surface=raw_surface,
         final_surface=final_surface,
+        raw_surface_low=raw_surface_low,
+        raw_surface_high=raw_surface_high,
+        final_surface_low=final_surface_low,
+        final_surface_high=final_surface_high,
+        anisotropy_angle=anisotropy_angle,
+        anisotropy_strength=anisotropy_strength,
         layers=layers,
         stats=stats,
     )
@@ -488,11 +636,26 @@ def save_result(result: QuickCurveResult, cfg: QuickCurveConfig, out_dir: str | 
     np.save(out / "x_coords.npy", result.x_coords)
     np.save(out / "y_coords.npy", result.y_coords)
     np.save(out / "top_z.npy", result.top_z)
+    np.save(out / "terrace_z.npy", result.terrace_z)
     np.save(out / "valid_mask.npy", result.valid_mask)
+    np.save(out / "terrace_mask.npy", result.terrace_mask)
     np.save(out / "theta_mask.npy", result.theta_mask)
     np.save(out / "labels.npy", result.labels)
+
+    np.save(out / "theta_mask_low.npy", result.theta_mask_low)
+    np.save(out / "theta_mask_high.npy", result.theta_mask_high)
+    np.save(out / "labels_low.npy", result.labels_low)
+    np.save(out / "labels_high.npy", result.labels_high)
+
     np.save(out / "raw_surface.npy", result.raw_surface)
     np.save(out / "final_surface.npy", result.final_surface)
+    np.save(out / "raw_surface_low.npy", result.raw_surface_low)
+    np.save(out / "raw_surface_high.npy", result.raw_surface_high)
+    np.save(out / "final_surface_low.npy", result.final_surface_low)
+    np.save(out / "final_surface_high.npy", result.final_surface_high)
+
+    np.save(out / "anisotropy_angle.npy", result.anisotropy_angle)
+    np.save(out / "anisotropy_strength.npy", result.anisotropy_strength)
 
     with (out / "layers.json").open("w", encoding="utf-8") as f:
         json.dump(result.layers, f)
@@ -501,9 +664,10 @@ def save_result(result: QuickCurveResult, cfg: QuickCurveConfig, out_dir: str | 
         "config": asdict(cfg),
         "stats": result.stats,
         "notes": [
-            "Reference implementation of the QuickCurve paper method.",
-            "Uses vertical ray sampling, least-squares surface solve, and top-down post-process.",
-            "Contours are extracted from deformed raster slices.",
+            "QuickCurve/FlexSlicer reference implementation.",
+            "Uses vertical ray sampling, least-squares surface solve, and conical post-process.",
+            "K=2 mode solves low/high anchor fields with depth blend for FlexField warping.",
+            "Anisotropy field is exported as angle/strength maps for downstream toolpath steering.",
         ],
     }
 

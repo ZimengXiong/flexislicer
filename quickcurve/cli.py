@@ -15,7 +15,7 @@ from quickcurve.solver import QuickCurveConfig, run_quickcurve, save_result
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="QuickCurve reference implementation (Python)."
+        description="FlexSlicer/QuickCurve reference implementation (Python)."
     )
     p.add_argument("--mesh", required=True, help="Input watertight mesh (STL/OBJ/PLY/...).")
     p.add_argument("--out", required=True, help="Output directory.")
@@ -51,6 +51,37 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Optional cap on number of generated layers.",
+    )
+    p.add_argument(
+        "--flex-k",
+        type=int,
+        default=2,
+        choices=[1, 2],
+        help="FlexField anchor count: 1=QuickCurve-style single field, 2=FlexSlicer dual-anchor field.",
+    )
+    p.add_argument(
+        "--terrace-gap-mm",
+        type=float,
+        default=0.6,
+        help="Minimum vertical gap from top surface to accept a secondary terrace target (mm).",
+    )
+    p.add_argument(
+        "--terrace-max-gap-mm",
+        type=float,
+        default=None,
+        help="Optional maximum vertical gap from top surface for terrace targets (mm).",
+    )
+    p.add_argument(
+        "--flex-blend-start-frac",
+        type=float,
+        default=0.2,
+        help="Start of depth blending as a fraction of model height [0..1].",
+    )
+    p.add_argument(
+        "--flex-blend-end-frac",
+        type=float,
+        default=0.85,
+        help="End of depth blending as a fraction of model height [0..1].",
     )
 
     p.add_argument("--w-gradient", type=float, default=1.0, help="Gradient objective weight.")
@@ -133,6 +164,41 @@ def build_parser() -> argparse.ArgumentParser:
         default=4,
         help="Blend from planar to full non-planar over this many layers after preserved layers.",
     )
+    p.add_argument(
+        "--anisotropy-steer",
+        action="store_true",
+        help="Steer perimeter/infill segment headings toward the anisotropy field.",
+    )
+    p.add_argument(
+        "--steer-perimeter-strength",
+        type=float,
+        default=0.35,
+        help="Steering gain for perimeter-like paths (>=0).",
+    )
+    p.add_argument(
+        "--steer-infill-strength",
+        type=float,
+        default=0.65,
+        help="Steering gain for infill-like paths (>=0).",
+    )
+    p.add_argument(
+        "--steer-max-angle-deg",
+        type=float,
+        default=18.0,
+        help="Maximum heading correction per move in degrees.",
+    )
+    p.add_argument(
+        "--steer-max-shift-mm",
+        type=float,
+        default=0.12,
+        help="Maximum XY endpoint shift per move from steering.",
+    )
+    p.add_argument(
+        "--steer-strength-floor",
+        type=float,
+        default=0.0,
+        help="Minimum normalized anisotropy strength [0..1] used for steering.",
+    )
 
     return p
 
@@ -146,6 +212,20 @@ def main() -> None:
         raise ValueError("--preserve-planar-layers must be >= 0")
     if args.warp_transition_layers < 0:
         raise ValueError("--warp-transition-layers must be >= 0")
+    if args.terrace_gap_mm < 0:
+        raise ValueError("--terrace-gap-mm must be >= 0")
+    if args.terrace_max_gap_mm is not None and args.terrace_max_gap_mm < 0:
+        raise ValueError("--terrace-max-gap-mm must be >= 0")
+    if args.steer_perimeter_strength < 0:
+        raise ValueError("--steer-perimeter-strength must be >= 0")
+    if args.steer_infill_strength < 0:
+        raise ValueError("--steer-infill-strength must be >= 0")
+    if args.steer_max_angle_deg < 0:
+        raise ValueError("--steer-max-angle-deg must be >= 0")
+    if args.steer_max_shift_mm < 0:
+        raise ValueError("--steer-max-shift-mm must be >= 0")
+    if args.steer_strength_floor < 0 or args.steer_strength_floor > 1:
+        raise ValueError("--steer-strength-floor must be within [0, 1]")
 
     cfg = QuickCurveConfig(
         grid_step=args.grid_step,
@@ -159,6 +239,11 @@ def main() -> None:
         w_boundary=args.w_boundary,
         w_smooth=args.w_smooth,
         w_component_reg=args.w_component_reg,
+        flex_k=args.flex_k,
+        terrace_min_gap_mm=args.terrace_gap_mm,
+        terrace_max_gap_mm=args.terrace_max_gap_mm,
+        flex_blend_start_frac=args.flex_blend_start_frac,
+        flex_blend_end_frac=args.flex_blend_end_frac,
     )
 
     result = run_quickcurve(Path(args.mesh), cfg)
@@ -263,6 +348,13 @@ def main() -> None:
             z_anchor_to_bed=not args.no_z_bed_anchor,
             preserve_planar_layers=args.preserve_planar_layers,
             transition_layers=args.warp_transition_layers,
+            layer_height=cfg.layer_height,
+            anisotropy_steer=args.anisotropy_steer,
+            steer_perimeter_strength=args.steer_perimeter_strength,
+            steer_infill_strength=args.steer_infill_strength,
+            steer_max_angle_deg=args.steer_max_angle_deg,
+            steer_max_shift_mm=args.steer_max_shift_mm,
+            steer_strength_floor=args.steer_strength_floor,
         )
 
     print("QuickCurve run completed.")
@@ -271,6 +363,8 @@ def main() -> None:
     print(f"Valid samples: {result.stats['num_valid']}")
     print(f"Theta samples: {result.stats['num_theta']}")
     print(f"Connected components: {result.stats['num_components']}")
+    print(f"FlexField K: {result.stats.get('flex_k', 1)}")
+    print(f"Terrace samples: {result.stats.get('num_terrace', 0)}")
     print(f"Layers with contours: {result.stats['num_layers_with_paths']}")
     if deformed_stl_path is not None:
         print(f"Deformed STL: {deformed_stl_path}")
