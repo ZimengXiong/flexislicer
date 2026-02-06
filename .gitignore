@@ -24,6 +24,7 @@ htmlcov/
 
 # Generated slicer/QuickCurve outputs
 out_*/
+out_*.json
 
 # Downloaded assets
 models/

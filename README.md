@@ -74,8 +74,6 @@ uv run quickcurve \
 Notes:
 - `--flex-k 2` enables dual-anchor FlexField warping; use `--flex-k 1` for single-field behavior.
 - `--terrace-gap-mm` controls how deep secondary terrace targets must be below the top surface.
-- `--terrace-max-gap-mm` optionally rejects very deep secondary hits (useful to ignore
-  opposite-shell bottom surfaces in thin coupons).
 - `--flex-blend-start-frac` / `--flex-blend-end-frac` set depth blending range for `S_low`→`S_high`.
 - If `/applications/prusaslicer` does not exist, the tool automatically falls back to:
   `/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer`

@@ -66,12 +66,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum vertical gap from top surface to accept a secondary terrace target (mm).",
     )
     p.add_argument(
-        "--terrace-max-gap-mm",
-        type=float,
-        default=None,
-        help="Optional maximum vertical gap from top surface for terrace targets (mm).",
-    )
-    p.add_argument(
         "--flex-blend-start-frac",
         type=float,
         default=0.2,
@@ -214,8 +208,6 @@ def main() -> None:
         raise ValueError("--warp-transition-layers must be >= 0")
     if args.terrace_gap_mm < 0:
         raise ValueError("--terrace-gap-mm must be >= 0")
-    if args.terrace_max_gap_mm is not None and args.terrace_max_gap_mm < 0:
-        raise ValueError("--terrace-max-gap-mm must be >= 0")
     if args.steer_perimeter_strength < 0:
         raise ValueError("--steer-perimeter-strength must be >= 0")
     if args.steer_infill_strength < 0:
@@ -241,7 +233,6 @@ def main() -> None:
         w_component_reg=args.w_component_reg,
         flex_k=args.flex_k,
         terrace_min_gap_mm=args.terrace_gap_mm,
-        terrace_max_gap_mm=args.terrace_max_gap_mm,
         flex_blend_start_frac=args.flex_blend_start_frac,
         flex_blend_end_frac=args.flex_blend_end_frac,
     )

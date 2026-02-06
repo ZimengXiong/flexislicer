@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import math
 import re
 import subprocess
 from typing import Iterable
@@ -69,6 +70,147 @@ class SurfaceSampler:
         return self._bilinear(self._filled, row, col)
 
 
+@dataclass
+class FlexFieldSampler:
+    surface_low: np.ndarray
+    surface_high: np.ndarray
+    x_coords: np.ndarray
+    y_coords: np.ndarray
+    blend_z_start: float
+    blend_z_end: float
+    z_ref_min: float
+    layer_height: float
+    preserve_planar_layers: int
+    transition_layers: int
+    flex_k: int
+
+    def __post_init__(self) -> None:
+        self.low = SurfaceSampler(self.surface_low, self.x_coords, self.y_coords)
+        self.high = SurfaceSampler(self.surface_high, self.x_coords, self.y_coords)
+        self.preserve_h = float(self.preserve_planar_layers) * float(self.layer_height)
+        self.transition_h = float(self.transition_layers) * float(self.layer_height)
+
+        # Prevent sharp bottom transition from creating inter-layer separation
+        # when displacement magnitude is large.
+        finite_low = np.abs(self.surface_low[np.isfinite(self.surface_low)])
+        finite_high = np.abs(self.surface_high[np.isfinite(self.surface_high)])
+        if finite_low.size == 0 and finite_high.size == 0:
+            field_p95 = 0.0
+        else:
+            pooled = np.concatenate([finite_low, finite_high])
+            field_p95 = float(np.percentile(pooled, 95))
+
+        self.transition_h_eff = self.transition_h
+        if self.transition_h > 0.0 and field_p95 > 0.0:
+            self.transition_h_eff = max(self.transition_h, 2.0 * field_p95)
+
+        self.z_guard = float(self.z_ref_min + self.preserve_h)
+
+    @staticmethod
+    def _smoothstep(t: float) -> float:
+        tc = float(np.clip(t, 0.0, 1.0))
+        return tc * tc * (3.0 - 2.0 * tc)
+
+    def _depth_blend(self, z: float) -> float:
+        if self.flex_k < 2:
+            return 1.0
+        if self.blend_z_end <= self.blend_z_start:
+            return 1.0 if z >= self.blend_z_start else 0.0
+        t = (z - self.blend_z_start) / (self.blend_z_end - self.blend_z_start)
+        return self._smoothstep(t)
+
+    def _geometry_weight(self, z: float) -> float:
+        if z <= self.z_guard:
+            return 0.0
+        if self.transition_h_eff <= 0.0:
+            return 1.0
+        t = (z - self.z_guard) / self.transition_h_eff
+        return self._smoothstep(t)
+
+    def field_only(self, x: float, y: float, z: float) -> float:
+        hi = self.high.sample(x, y)
+        if self.flex_k < 2:
+            return hi
+        lo = self.low.sample(x, y)
+        b = self._depth_blend(z)
+        return float((1.0 - b) * lo + b * hi)
+
+    def sample(self, x: float, y: float, z: float) -> float:
+        base = self.field_only(x, y, z)
+        return float(self._geometry_weight(z) * base)
+
+
+@dataclass
+class AnisotropySampler:
+    angle: np.ndarray
+    strength: np.ndarray
+    x_coords: np.ndarray
+    y_coords: np.ndarray
+
+    def __post_init__(self) -> None:
+        self._cos2 = SurfaceSampler(np.cos(2.0 * self.angle), self.x_coords, self.y_coords)
+        self._sin2 = SurfaceSampler(np.sin(2.0 * self.angle), self.x_coords, self.y_coords)
+        self._strength = SurfaceSampler(self.strength, self.x_coords, self.y_coords)
+
+        finite = self.strength[np.isfinite(self.strength)]
+        if finite.size == 0:
+            self._norm = 1.0
+        else:
+            self._norm = max(float(np.percentile(finite, 95)), 1e-9)
+
+    def orientation_strength(self, x: float, y: float) -> tuple[tuple[float, float], float]:
+        c2 = self._cos2.sample(x, y)
+        s2 = self._sin2.sample(x, y)
+        ang = 0.5 * math.atan2(s2, c2)
+        ux = math.cos(ang)
+        uy = math.sin(ang)
+
+        raw = self._strength.sample(x, y)
+        if not np.isfinite(raw):
+            raw = 0.0
+        sn = float(np.clip(raw / self._norm, 0.0, 1.0))
+        return (ux, uy), sn
+
+
+def _build_flex_sampler(
+    result: QuickCurveResult,
+    layer_height: float,
+    preserve_planar_layers: int,
+    transition_layers: int,
+) -> FlexFieldSampler:
+    low = getattr(result, "final_surface_low", result.final_surface)
+    high = getattr(result, "final_surface_high", result.final_surface)
+
+    stats = getattr(result, "stats", {})
+    z_ref_min = float(stats.get("mesh_z_min", 0.0))
+    blend_z_start = float(stats.get("blend_z_start", z_ref_min))
+    blend_z_end = float(stats.get("blend_z_end", blend_z_start + 1.0))
+    flex_k = int(stats.get("flex_k", 1))
+
+    return FlexFieldSampler(
+        surface_low=low,
+        surface_high=high,
+        x_coords=result.x_coords,
+        y_coords=result.y_coords,
+        blend_z_start=blend_z_start,
+        blend_z_end=blend_z_end,
+        z_ref_min=z_ref_min,
+        layer_height=layer_height,
+        preserve_planar_layers=preserve_planar_layers,
+        transition_layers=transition_layers,
+        flex_k=flex_k,
+    )
+
+
+def _build_anisotropy_sampler(result: QuickCurveResult) -> AnisotropySampler:
+    return AnisotropySampler(
+        angle=result.anisotropy_angle,
+        strength=result.anisotropy_strength,
+        x_coords=result.x_coords,
+        y_coords=result.y_coords,
+    )
+
+
 def resolve_prusaslicer_cli(preferred: str | None = None) -> Path:
     candidates = [preferred] if preferred else []
     candidates.extend(DEFAULT_PRUSASLICER_PATHS)
@@ -111,32 +253,41 @@ def export_deformed_stl(
     else:
         raise ValueError("Input mesh is not a valid Trimesh")
 
-    sampler = SurfaceSampler(
-        surface=result.final_surface,
-        x_coords=result.x_coords,
-        y_coords=result.y_coords,
+    flex = _build_flex_sampler(
+        result=result,
+        layer_height=layer_height,
+        preserve_planar_layers=preserve_planar_layers,
+        transition_layers=transition_layers,
     )
 
     verts = mesh.vertices.copy()
-    offsets = np.array([sampler.sample(v[0], v[1]) for v in verts], dtype=float)
-    z_min = float(np.min(verts[:, 2]))
-    rel_z = verts[:, 2] - z_min
-    preserve_h = float(preserve_planar_layers) * float(layer_height)
-    transition_h = float(transition_layers) * float(layer_height)
-    lock_h = preserve_h + transition_h
-    z_guard = z_min + lock_h
+    z_real = verts[:, 2].copy()
+    z_slice = z_real.copy()
 
-    if transition_h <= 0.0:
-        deform_w = np.where(verts[:, 2] <= z_guard, 0.0, 1.0)
-    else:
-        t = np.clip((rel_z - lock_h) / transition_h, 0.0, 1.0)
-        deform_w = t * t * (3.0 - 2.0 * t)
-        deform_w = np.where(verts[:, 2] <= z_guard, 0.0, deform_w)
+    # Solve z_real = z_slice + D(x, y, z_slice) by fixed-point iteration per vertex.
+    for i in range(verts.shape[0]):
+        xr = float(verts[i, 0])
+        yr = float(verts[i, 1])
+        zr = float(z_real[i])
 
-    z_new = verts[:, 2] - offsets * deform_w
-    upper_mask = verts[:, 2] > z_guard
-    z_new[upper_mask] = np.maximum(z_new[upper_mask], z_guard)
-    verts[:, 2] = z_new
+        if zr <= flex.z_guard:
+            z_slice[i] = zr
+            continue
+
+        zs = zr
+        for _ in range(10):
+            d = flex.sample(xr, yr, zs)
+            if not np.isfinite(d):
+                d = 0.0
+            zs_next = zr - d
+            if abs(zs_next - zs) < 1e-6:
+                zs = zs_next
+                break
+            zs = zs_next
+
+        z_slice[i] = zs
+
+    verts[:, 2] = z_slice
 
     deformed = trimesh.Trimesh(vertices=verts, faces=mesh.faces.copy(), process=False)
     out = Path(out_stl_path)
@@ -210,19 +361,6 @@ def _format_float(value: float) -> str:
     text = f"{value:.5f}"
     text = text.rstrip("0").rstrip(".")
     return text if text else "0"
-
-
-def _layer_factor(idx: int, preserve_planar_layers: int, transition_layers: int) -> float:
-    if idx < preserve_planar_layers:
-        return 0.0
-    if transition_layers <= 0:
-        return 1.0
-    rel = idx - preserve_planar_layers
-    if rel < transition_layers:
-        t = float(rel + 1) / float(transition_layers + 1)
-        # Smoothstep blend to avoid abrupt slope changes at transition boundaries.
-        return t * t * (3.0 - 2.0 * t)
-    return 1.0
 
 
 def _collect_xy_bounds(gcode_path: str | Path) -> tuple[float, float, float, float]:
@@ -399,97 +537,6 @@ def _collect_extrusion_samples(gcode_path: str | Path) -> np.ndarray:
     return np.asarray(samples, dtype=float)
 
 
-def _estimate_transition_lift(
-    gcode_path: str | Path,
-    sampler: SurfaceSampler,
-    shift_x: float,
-    shift_y: float,
-    z_baseline: float,
-    preserve_planar_layers: int,
-    transition_layers: int,
-) -> float:
-    cur_x = 0.0
-    cur_y = 0.0
-    cur_z = 0.0
-    cur_e = 0.0
-    abs_xyz = True
-    abs_e = True
-    layer_idx = -1
-
-    min_def = float("inf")
-    min_warp = float("inf")
-
-    with Path(gcode_path).open("r", encoding="utf-8", errors="replace") as f:
-        for raw in f:
-            line = raw.rstrip("\n")
-            code_raw, sep, comment = line.partition(";")
-            comment_text = comment.strip() if sep else ""
-            if comment_text:
-                up = comment_text.upper()
-                if up.startswith("LAYER_CHANGE"):
-                    layer_idx += 1
-                m_layer = re.match(r"^LAYER\s*:\s*(-?\d+)\s*$", comment_text, flags=re.IGNORECASE)
-                if m_layer:
-                    layer_idx = int(m_layer.group(1))
-
-            code = code_raw.strip()
-            if not code:
-                continue
-            cmd = code.split()[0].upper()
-            if cmd == "G90":
-                abs_xyz = True
-                continue
-            if cmd == "G91":
-                abs_xyz = False
-                continue
-            if cmd == "M82":
-                abs_e = True
-                continue
-            if cmd == "M83":
-                abs_e = False
-                continue
-            if cmd not in {"G0", "G1"}:
-                continue
-
-            vals: dict[str, float] = {}
-            for w in code.split()[1:]:
-                m = _TOKEN.match(w)
-                if not m:
-                    continue
-                vals[m.group(1).upper()] = float(m.group(2))
-
-            if abs_xyz:
-                nx = vals.get("X", cur_x)
-                ny = vals.get("Y", cur_y)
-                nz = vals.get("Z", cur_z)
-            else:
-                nx = cur_x + vals.get("X", 0.0)
-                ny = cur_y + vals.get("Y", 0.0)
-                nz = cur_z + vals.get("Z", 0.0)
-
-            if abs_e:
-                ne = vals.get("E", cur_e)
-                delta_e = ne - cur_e
-            else:
-                de = vals.get("E", 0.0)
-                ne = cur_e + de
-                delta_e = de
-
-            f_layer = _layer_factor(layer_idx, preserve_planar_layers, transition_layers)
-            z_off = sampler.sample(nx - shift_x, ny - shift_y)
-            z_warp = nz + f_layer * (z_off - z_baseline)
-
-            if delta_e > 1e-8 and layer_idx == preserve_planar_layers:
-                min_def = min(min_def, nz)
-                min_warp = min(min_warp, z_warp)
-
-            cur_x, cur_y, cur_z, cur_e = nx, ny, nz, ne
-
-    if not np.isfinite(min_def) or not np.isfinite(min_warp):
-        return 0.0
-    return max(0.0, float(min_warp - min_def))
-
-
 def warp_gcode_with_surface(
     input_gcode: str | Path,
     output_gcode: str | Path,
@@ -499,17 +546,26 @@ def warp_gcode_with_surface(
     z_anchor_to_bed: bool = True,
     preserve_planar_layers: int = 1,
     transition_layers: int = 4,
+    layer_height: float = 0.2,
+    anisotropy_steer: bool = False,
+    steer_perimeter_strength: float = 0.35,
+    steer_infill_strength: float = 0.65,
+    steer_max_angle_deg: float = 18.0,
+    steer_max_shift_mm: float = 0.12,
+    steer_strength_floor: float = 0.0,
 ) -> Path:
     if preserve_planar_layers < 0:
         raise ValueError("preserve_planar_layers must be >= 0")
     if transition_layers < 0:
         raise ValueError("transition_layers must be >= 0")
 
-    sampler = SurfaceSampler(
-        surface=result.final_surface,
-        x_coords=result.x_coords,
-        y_coords=result.y_coords,
+    flex = _build_flex_sampler(
+        result=result,
+        layer_height=layer_height,
+        preserve_planar_layers=preserve_planar_layers,
+        transition_layers=transition_layers,
     )
+    anis = _build_anisotropy_sampler(result) if anisotropy_steer else None
 
     in_path = Path(input_gcode)
     out_path = Path(output_gcode)
@@ -537,24 +593,34 @@ def warp_gcode_with_surface(
         ext = _collect_extrusion_samples(in_path)
         if ext.shape[0] > 0:
             layer_col = ext[:, 3]
-            basis = ext[layer_col == float(preserve_planar_layers)]
-            if basis.shape[0] == 0 and preserve_planar_layers > 0:
+            if preserve_planar_layers > 0:
                 basis = ext[layer_col == float(preserve_planar_layers - 1)]
+            else:
+                basis = ext[layer_col == 0.0]
+            if basis.shape[0] == 0:
+                basis = ext[layer_col == float(preserve_planar_layers)]
             if basis.shape[0] == 0:
                 z_first = float(np.min(ext[:, 2]))
                 basis = ext[ext[:, 2] <= (z_first + 0.05)]
             if basis.shape[0] == 0:
                 basis = ext
             offsets = np.array(
-                [sampler.sample(float(x - shift_x), float(y - shift_y)) for x, y, _, _ in basis],
+                [
+                    flex.sample(float(x - shift_x), float(y - shift_y), float(z))
+                    for x, y, z, _ in basis
+                ],
                 dtype=float,
             )
         else:
             xy_points = _collect_xy_positions(in_path)
-            offsets = np.array(
-                [sampler.sample(float(x - shift_x), float(y - shift_y)) for x, y in xy_points],
-                dtype=float,
-            ) if xy_points.shape[0] > 0 else np.array([], dtype=float)
+            offsets = (
+                np.array(
+                    [flex.sample(float(x - shift_x), float(y - shift_y), flex.z_ref_min) for x, y in xy_points],
+                    dtype=float,
+                )
+                if xy_points.shape[0] > 0
+                else np.array([], dtype=float)
+            )
 
         finite = offsets[np.isfinite(offsets)]
         if finite.size > 0:
@@ -563,35 +629,55 @@ def warp_gcode_with_surface(
             else:
                 z_baseline = float(np.min(finite))
 
-    transition_lift = _estimate_transition_lift(
-        gcode_path=in_path,
-        sampler=sampler,
-        shift_x=shift_x,
-        shift_y=shift_y,
-        z_baseline=z_baseline,
-        preserve_planar_layers=preserve_planar_layers,
-        transition_layers=transition_layers,
-    )
-
     abs_xyz = True
     abs_e = True
     cur_x = 0.0
     cur_y = 0.0
     cur_z_def = 0.0
     cur_z_warp = 0.0
-    cur_e = 0.0
+    cur_e_in = 0.0
+    cur_e_warp = 0.0
     layer_idx = -1
+    cur_type = ""
+
+    max_steer_rad = math.radians(max(0.0, steer_max_angle_deg))
+
+    def _wrap_pi(a: float) -> float:
+        return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+    def _path_group(tool_type: str) -> str:
+        t = tool_type.lower()
+        if "perimeter" in t:
+            return "perimeter"
+        if "infill" in t:
+            return "infill"
+        return "other"
 
     with in_path.open("r", encoding="utf-8", errors="replace") as src, out_path.open(
         "w", encoding="utf-8"
     ) as dst:
-        dst.write("; QuickCurve non-planar warp applied\n")
+        dst.write("; FlexSlicer non-planar warp applied\n")
         dst.write(f"; Source gcode: {in_path}\n")
+        dst.write(f"; FlexField K: {flex.flex_k}\n")
+        dst.write(f"; Depth blend z: start={_format_float(flex.blend_z_start)} end={_format_float(flex.blend_z_end)}\n")
         dst.write(f"; XY shift applied before sampling: dx={_format_float(shift_x)} dy={_format_float(shift_y)}\n")
         dst.write(f"; Z baseline removed from warp: {_format_float(z_baseline)}\n")
-        dst.write(f"; Transition lift correction: {_format_float(transition_lift)}\n")
         dst.write(f"; Planar layers preserved: {preserve_planar_layers}\n")
         dst.write(f"; Warp transition layers: {transition_layers}\n")
+        dst.write("; Extrusion compensation: enabled (3D path-length scaling)\n")
+        if anisotropy_steer:
+            dst.write("; Anisotropy steering: enabled\n")
+            dst.write(
+                f"; Steering strengths: perimeter={_format_float(steer_perimeter_strength)} "
+                f"infill={_format_float(steer_infill_strength)} "
+                f"floor={_format_float(steer_strength_floor)}\n"
+            )
+            dst.write(
+                f"; Steering caps: max_angle_deg={_format_float(steer_max_angle_deg)} "
+                f"max_shift_mm={_format_float(steer_max_shift_mm)}\n"
+            )
+        else:
+            dst.write("; Anisotropy steering: disabled\n")
 
         for line in src:
             raw = line.rstrip("\n")
@@ -608,6 +694,9 @@ def warp_gcode_with_surface(
                 m_layer = re.match(r"^LAYER\s*:\s*(-?\d+)\s*$", comment_text, flags=re.IGNORECASE)
                 if m_layer:
                     layer_idx = int(m_layer.group(1))
+                m_type = re.match(r"^TYPE\s*:\s*(.+)\s*$", comment_text, flags=re.IGNORECASE)
+                if m_type:
+                    cur_type = m_type.group(1).strip()
 
             stripped = code.strip()
             if not stripped:
@@ -658,28 +747,105 @@ def warp_gcode_with_surface(
                 next_z_def = cur_z_def + parsed.get("Z", 0.0)
 
             if abs_e:
-                next_e = parsed.get("E", cur_e)
+                next_e_in = parsed.get("E", cur_e_in)
             else:
-                next_e = cur_e + parsed.get("E", 0.0)
+                next_e_in = cur_e_in + parsed.get("E", 0.0)
 
-            z_off = sampler.sample(next_x - shift_x, next_y - shift_y)
-            f = _layer_factor(layer_idx, preserve_planar_layers, transition_layers)
-            next_z_warp = next_z_def + f * (z_off - z_baseline)
-            if f > 0.0 and layer_idx >= preserve_planar_layers:
-                next_z_warp -= transition_lift
+            xy_steered = False
+            if anis is not None and (next_e_in - cur_e_in) > 1e-8 and layer_idx >= preserve_planar_layers:
+                grp = _path_group(cur_type)
+                if grp == "perimeter":
+                    base_gain = max(0.0, float(steer_perimeter_strength))
+                elif grp == "infill":
+                    base_gain = max(0.0, float(steer_infill_strength))
+                else:
+                    base_gain = 0.0
+
+                dx_xy = next_x - cur_x
+                dy_xy = next_y - cur_y
+                len_xy = math.hypot(dx_xy, dy_xy)
+                if base_gain > 0.0 and len_xy > 1e-9:
+                    xm = 0.5 * (cur_x + next_x) - shift_x
+                    ym = 0.5 * (cur_y + next_y) - shift_y
+                    (tx, ty), s_norm = anis.orientation_strength(xm, ym)
+                    s_norm = max(s_norm, float(np.clip(steer_strength_floor, 0.0, 1.0)))
+                    gain = float(np.clip(base_gain * s_norm, 0.0, 1.0))
+                    if gain > 0.0:
+                        dot = dx_xy * tx + dy_xy * ty
+                        if dot < 0.0:
+                            tx, ty = -tx, -ty
+
+                        a_cur = math.atan2(dy_xy, dx_xy)
+                        a_tar = math.atan2(ty, tx)
+                        d_ang = _wrap_pi(a_tar - a_cur)
+                        d_lim = float(np.clip(d_ang, -max_steer_rad * gain, max_steer_rad * gain))
+                        a_new = a_cur + d_lim
+
+                        sx = cur_x + len_xy * math.cos(a_new)
+                        sy = cur_y + len_xy * math.sin(a_new)
+
+                        if steer_max_shift_mm > 0.0:
+                            shift_mag = math.hypot(sx - next_x, sy - next_y)
+                            if shift_mag > steer_max_shift_mm:
+                                r = steer_max_shift_mm / shift_mag
+                                sx = next_x + (sx - next_x) * r
+                                sy = next_y + (sy - next_y) * r
+
+                        next_x, next_y = sx, sy
+                        xy_steered = True
+
+            z_off = flex.sample(next_x - shift_x, next_y - shift_y, next_z_def)
+            next_z_warp = next_z_def + (z_off - z_baseline)
+
+            delta_e_in = next_e_in - cur_e_in
+            delta_e_out = delta_e_in
+            if delta_e_in > 1e-8:
+                dx = next_x - cur_x
+                dy = next_y - cur_y
+                dz_def = next_z_def - cur_z_def
+                dz_warp = next_z_warp - cur_z_warp
+                len_def = float(np.sqrt(dx * dx + dy * dy + dz_def * dz_def))
+                len_warp = float(np.sqrt(dx * dx + dy * dy + dz_warp * dz_warp))
+                if len_def > 1e-9 and np.isfinite(len_warp):
+                    delta_e_out = delta_e_in * (len_warp / len_def)
+
+            if abs_e:
+                next_e_warp = cur_e_warp + delta_e_out
+                e_token = f"E{_format_float(next_e_warp)}" if "E" in parsed else None
+            else:
+                next_e_warp = cur_e_warp + delta_e_out
+                e_token = f"E{_format_float(delta_e_out)}" if "E" in parsed else None
 
             if abs_xyz:
                 z_token = f"Z{_format_float(next_z_warp)}"
+                x_token = f"X{_format_float(next_x)}" if ("X" in parsed or xy_steered) else None
+                y_token = f"Y{_format_float(next_y)}" if ("Y" in parsed or xy_steered) else None
             else:
                 z_token = f"Z{_format_float(next_z_warp - cur_z_warp)}"
+                x_token = (
+                    f"X{_format_float(next_x - cur_x)}"
+                    if ("X" in parsed or (xy_steered and abs(next_x - cur_x) > 1e-9))
+                    else None
+                )
+                y_token = (
+                    f"Y{_format_float(next_y - cur_y)}"
+                    if ("Y" in parsed or (xy_steered and abs(next_y - cur_y) > 1e-9))
+                    else None
+                )
 
             rebuilt = [words[0]]
             for w in words[1:]:
-                if _TOKEN.match(w) and w[0].upper() == "Z":
+                if _TOKEN.match(w) and w[0].upper() in {"X", "Y", "Z", "E"}:
                     continue
                 rebuilt.append(w)
 
+            if x_token is not None:
+                rebuilt.append(x_token)
+            if y_token is not None:
+                rebuilt.append(y_token)
             rebuilt.append(z_token)
+            if e_token is not None:
+                rebuilt.append(e_token)
 
             out_line = " ".join(rebuilt)
             if sep:
@@ -690,6 +856,7 @@ def warp_gcode_with_surface(
             cur_y = next_y
             cur_z_def = next_z_def
             cur_z_warp = next_z_warp
-            cur_e = next_e
+            cur_e_in = next_e_in
+            cur_e_warp = next_e_warp
 
     return out_path
