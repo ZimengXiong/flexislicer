@@ -158,41 +158,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=4,
         help="Blend from planar to full non-planar over this many layers after preserved layers.",
     )
-    p.add_argument(
-        "--anisotropy-steer",
-        action="store_true",
-        help="Steer perimeter/infill segment headings toward the anisotropy field.",
-    )
-    p.add_argument(
-        "--steer-perimeter-strength",
-        type=float,
-        default=0.35,
-        help="Steering gain for perimeter-like paths (>=0).",
-    )
-    p.add_argument(
-        "--steer-infill-strength",
-        type=float,
-        default=0.65,
-        help="Steering gain for infill-like paths (>=0).",
-    )
-    p.add_argument(
-        "--steer-max-angle-deg",
-        type=float,
-        default=18.0,
-        help="Maximum heading correction per move in degrees.",
-    )
-    p.add_argument(
-        "--steer-max-shift-mm",
-        type=float,
-        default=0.12,
-        help="Maximum XY endpoint shift per move from steering.",
-    )
-    p.add_argument(
-        "--steer-strength-floor",
-        type=float,
-        default=0.0,
-        help="Minimum normalized anisotropy strength [0..1] used for steering.",
-    )
 
     return p
 
@@ -208,16 +173,6 @@ def main() -> None:
         raise ValueError("--warp-transition-layers must be >= 0")
     if args.terrace_gap_mm < 0:
         raise ValueError("--terrace-gap-mm must be >= 0")
-    if args.steer_perimeter_strength < 0:
-        raise ValueError("--steer-perimeter-strength must be >= 0")
-    if args.steer_infill_strength < 0:
-        raise ValueError("--steer-infill-strength must be >= 0")
-    if args.steer_max_angle_deg < 0:
-        raise ValueError("--steer-max-angle-deg must be >= 0")
-    if args.steer_max_shift_mm < 0:
-        raise ValueError("--steer-max-shift-mm must be >= 0")
-    if args.steer_strength_floor < 0 or args.steer_strength_floor > 1:
-        raise ValueError("--steer-strength-floor must be within [0, 1]")
 
     cfg = QuickCurveConfig(
         grid_step=args.grid_step,
@@ -340,12 +295,6 @@ def main() -> None:
             preserve_planar_layers=args.preserve_planar_layers,
             transition_layers=args.warp_transition_layers,
             layer_height=cfg.layer_height,
-            anisotropy_steer=args.anisotropy_steer,
-            steer_perimeter_strength=args.steer_perimeter_strength,
-            steer_infill_strength=args.steer_infill_strength,
-            steer_max_angle_deg=args.steer_max_angle_deg,
-            steer_max_shift_mm=args.steer_max_shift_mm,
-            steer_strength_floor=args.steer_strength_floor,
         )
 
     print("QuickCurve run completed.")

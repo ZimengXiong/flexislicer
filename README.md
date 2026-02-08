@@ -20,8 +20,7 @@ This repository contains a Python reference implementation of:
   - two anchors `S_low(x,y)` and `S_high(x,y)`,
   - smooth depth blending `D(x,y,z)` between anchors.
 - Inverse-warp G-code with extrusion compensation based on warped 3D path length.
-- Exported anisotropy field maps (`angle`, `strength`) and optional G-code heading steering
-  for perimeter/infill paths.
+- Exported anisotropy field maps (`angle`, `strength`) for downstream toolpath steering.
 - Curved slicing on rasterized solid intervals and contour extraction per layer.
 
 This is a practical reference implementation, not a production slicer.
@@ -96,12 +95,6 @@ Notes:
   - The deformed STL keeps bottom geometry unchanged through preserved + transition layers,
     then blends into inverse deformation smoothly.
   - The warped first layer keeps the same Z as the planar G-code first layer.
-- Optional anisotropy-aware heading steering can be enabled in warp:
-  - `--anisotropy-steer`
-  - `--steer-perimeter-strength` / `--steer-infill-strength`
-  - `--steer-max-angle-deg` / `--steer-max-shift-mm`
-  - `--steer-strength-floor` can force steering on flat models where geometric anisotropy
-    strength would otherwise be near zero.
 
 ## Outputs
 

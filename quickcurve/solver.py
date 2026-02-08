@@ -31,7 +31,6 @@ class QuickCurveConfig:
     # FlexSlicer extension
     flex_k: int = 2
     terrace_min_gap_mm: float = 0.6
-    terrace_max_gap_mm: float | None = None
     flex_blend_start_frac: float = 0.2
     flex_blend_end_frac: float = 0.85
 
@@ -199,7 +198,6 @@ def _extract_terrace_z(
     top_z: np.ndarray,
     valid_mask: np.ndarray,
     min_gap_mm: float,
-    max_gap_mm: float | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     terrace = np.full_like(top_z, np.nan)
     top_flat = top_z.reshape(-1)
@@ -210,12 +208,7 @@ def _extract_terrace_z(
         if not valid_flat[rid] or hits.size < 2:
             continue
         z_top = float(top_flat[rid])
-        hi = z_top - min_gap_mm
-        if max_gap_mm is None or max_gap_mm <= min_gap_mm:
-            lo = -np.inf
-        else:
-            lo = z_top - max_gap_mm
-        candidates = hits[(hits <= hi) & (hits >= lo)]
+        candidates = hits[hits <= (z_top - min_gap_mm)]
         if candidates.size == 0:
             continue
         terrace_flat[rid] = float(candidates[-1])
@@ -520,7 +513,6 @@ def run_quickcurve(mesh_path: str | Path, cfg: QuickCurveConfig) -> QuickCurveRe
             top_z=top_z,
             valid_mask=valid_mask,
             min_gap_mm=max(0.0, cfg.terrace_min_gap_mm),
-            max_gap_mm=cfg.terrace_max_gap_mm,
         )
 
         if int(np.count_nonzero(terrace_mask)) >= 8:
