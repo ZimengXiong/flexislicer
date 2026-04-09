@@ -1,0 +1,54 @@
+{
+  "model": "open_hole_coupon",
+  "geometry_mm": {
+    "length": 120.0,
+    "width": 25.0,
+    "thickness": 3.0,
+    "hole_diameter": 6.0
+  },
+  "k1": {
+    "gcode_path": "out_openhole_k1/final_nonplanar.gcode",
+    "z_stats": {
+      "first_layer_z_min": 0.2,
+      "first_layer_z_max": 0.2,
+      "global_z_span": 2.8
+    },
+    "alignment_metric_proxy": 0.7319922682617226,
+    "orientation_strength_mean": 0.3332872411772814,
+    "fea_proxy": {
+      "reaction_N_proxy": 423.51694495126776,
+      "effective_stiffness_N_per_mm_proxy": 2117.584724756339,
+      "sigma_nominal_proxy": 5.646892599350237,
+      "kt_sxx_near_hole": 3.2530457328010245,
+      "max_von_mises_proxy": 17.796822255082194,
+      "num_nodes": 3184,
+      "num_elements": 6014
+    }
+  },
+  "k2_steer": {
+    "gcode_path": "out_openhole_k2_steer/final_nonplanar.gcode",
+    "z_stats": {
+      "first_layer_z_min": 0.2,
+      "first_layer_z_max": 0.2,
+      "global_z_span": 2.8
+    },
+    "alignment_metric_proxy": 0.7319922682617226,
+    "orientation_strength_mean": 0.3332872411772814,
+    "fea_proxy": {
+      "reaction_N_proxy": 423.51694495126776,
+      "effective_stiffness_N_per_mm_proxy": 2117.584724756339,
+      "sigma_nominal_proxy": 5.646892599350237,
+      "kt_sxx_near_hole": 3.2530457328010245,
+      "max_von_mises_proxy": 17.796822255082194,
+      "num_nodes": 3184,
+      "num_elements": 6014
+    }
+  },
+  "ratios": {
+    "alignment_metric_proxy_ratio_k2_over_k1": 1.0,
+    "orientation_strength_mean_ratio_k2_over_k1": 1.0,
+    "effective_stiffness_N_per_mm_proxy_ratio_k2_over_k1": 1.0,
+    "kt_sxx_near_hole_ratio_k2_over_k1": 1.0,
+    "max_von_mises_proxy_ratio_k2_over_k1": 1.0
+  }
+}

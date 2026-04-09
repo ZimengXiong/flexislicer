@@ -1,0 +1,23 @@
+{
+  "project_title": "FlexiSlicer: A Python Reference Pipeline for Slightly Non-Planar 3-Axis FFF Printing",
+  "student_names": [
+    "Zimeng Xiong"
+  ],
+  "project_summary": "This project builds a Python reference workflow for slightly non-planar slicing on standard 3-axis fused-filament printers. The pipeline samples a watertight mesh onto a 2D grid, identifies top-surface regions that can be curved safely, solves a single least-squares optimization for a collision-aware slicing surface, and converts the result into non-planar layers and warped G-code. The implementation also adds an end-to-end command-line workflow with deformed-STL export, PrusaSlicer integration, automatic alignment, bed anchoring, and a smooth transition from planar bottom layers to curved top layers. Repository benchmarks show low runtimes on small test models, preserved first-layer planarity, and measurable control over surface curvature and orientation behavior. The goal is to make non-planar 3D printing easier to reproduce, study, and compare using transparent Python code and compact evaluation artifacts.",
+  "research_question": "Can a lightweight Python pipeline generate collision-aware, slightly non-planar toolpaths for standard 3-axis fused-filament printers so curved top surfaces are reproduced more faithfully than with only planar layers while keeping the workflow practical on desktop hardware?",
+  "project_origin": "This draft is based on repository materials showing a Python implementation inspired by the QuickCurve paper published on June 6, 2024. The current implementation adds an end-to-end mesh-to-G-code workflow around that idea. Replace this paragraph with your exact personal motivation, when you began the project, and whether the idea came from independent reading, a teacher, a class, a lab, or a mentor.",
+  "continuation": "None. Replace this sentence if the project continues prior science-fair work or earlier personal research.",
+  "work_by_others": "Relevant prior work includes Ahlers et al. (2019) on non-planar layers for smooth surface generation, Etienne et al. (2019) CurviSlicer for slightly curved slicing, and Ottonello et al. (2024) QuickCurve for efficient slice-surface optimization. Their papers established collision limits, curved-layer printing strategies, and motivating comparisons; this project focuses on a transparent Python implementation and experiments built from those ideas.",
+  "new_work_by_author": [
+    "Implemented the Python reference pipeline that samples a watertight mesh, builds the slope mask, solves a least-squares slicing surface, and extracts layers.",
+    "Added a command-line workflow and output serialization for grids, masks, layers, and metadata.",
+    "Integrated deformed-STL export, PrusaSlicer CLI invocation, G-code warping, XY auto-alignment, Z bed anchoring, and planar-to-nonplanar transition control.",
+    "Ran and summarized benchmark experiments on Benchy, sphere, cube, canopy, and open-hole coupon cases using the generated JSON outputs in this repository."
+  ],
+  "resources_and_support": [
+    "Publicly available research papers on non-planar 3D printing, especially QuickCurve (2024), CurviSlicer (2019), and Ahlers et al. (2019).",
+    "Open-source software libraries: Python, NumPy, SciPy, trimesh, scikit-image, and PrusaSlicer.",
+    "Personal computer and local development environment used to run experiments and generate the outputs in this repository.",
+    "Replace or expand this list if any mentor, class, lab, internship, or paid program provided non-public guidance, equipment, or access."
+  ]
+}
