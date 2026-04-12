@@ -1,9 +1,0 @@
-\section{Rank-2 Representation}
-
-We write the real-space height as `z = z_s + D(x,y,z_s)`, where `z_s` denotes the slicer-space vertical coordinate. Rather than solving a full volumetric field, we approximate `D` with two anchor heightfields:
-
-\[
-D(x,y,z_s) = (1-w(z_s)) S_{\text{low}}(x,y) + w(z_s) S_{\text{high}}(x,y).
-\]
-
-When `K=1`, the model collapses to a single anchor and recovers QuickCurve-style behavior. When `K=2`, the deformation shape can vary with height, which is the minimum extension needed to represent two near-horizontal surface families along one column. We deliberately stop at `K=2` because it is the smallest rank at which the structural limitation of `K=1` disappears.

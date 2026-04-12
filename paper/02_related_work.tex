@@ -1,5 +1,0 @@
-\section{Related Work}
-
-Planar adaptive layer height reduces stair stepping but remains planar and therefore cannot reorient interfaces within a layer. QuickCurve demonstrates that a single heightfield can make slightly non-planar slicing practical, largely because the core optimization is one linear least-squares solve followed by simple validity post-processing. CurviSlicer and related volumetric methods allow richer deformations but depend on tetrahedralization and constrained volumetric optimization.
-
-Double-surface variants are adjacent to our work, but surface selection matters. Interpolating between top and bottom surfaces improves some shape classes yet does not directly target internal ceilings. FlexSlicer instead uses top-hit plus second-hit extraction so that the additional degree of freedom is spent on the multi-depth feature that a single top-surface map misses.

@@ -1,5 +1,0 @@
-\section{Evaluation}
-
-We evaluate the method with a synthetic multi-depth benchmark and an anisotropy steering benchmark. For multi-depth geometry, we report a component-wise layer-alignment RMS error: each target surface component is matched to the best layer index, and the RMS height discrepancy is measured over that component. This metric avoids the correspondence ambiguity that appears when internal ceilings and top roofs live at different heights.
-
-Benchmark A uses a dome-like top surface with a distinct internal ceiling. As expected, `K=1` can align the top surface but misses the internal ceiling by millimeter-scale error, while `K=2` aligns both under a valid blend schedule. Benchmark B measures how much the anisotropy term changes gradient orientation relative to its impact on alignment RMS.

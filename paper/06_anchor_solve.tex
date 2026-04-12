@@ -1,5 +1,0 @@
-\section{Anchor Solve}
-
-Each anchor field is solved with a QuickCurve-style least-squares system. Unknowns consist of free grid heights plus one floating offset per connected target component. The objective includes a boundary consistency term that ties free-space values to target components, a gradient-shaping term that encourages the desired target slope in unconstrained regions, and a weak gauge regularizer to suppress null-space drift.
-
-After the least-squares solve, a top-down Lipschitz-style post-process enforces the maximum allowable conical slope. Solving two such systems remains practical, and because the low anchor is coupled to the high anchor outside the terrace mask, the additional degrees of freedom are concentrated where the model actually needs them.

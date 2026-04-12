@@ -1,7 +1,0 @@
-\section{Introduction}
-
-Slightly non-planar slicing improves surface finish and can reorient layer interfaces in ways that matter for strength, but existing methods split into two camps. Heightfield methods such as QuickCurve are practical and easy to reproduce, while volumetric methods such as CurviSlicer offer richer geometric control at the cost of heavier preprocessing and optimization.
-
-The missing capability is \emph{multi-depth control}. A single heightfield only follows the topmost target visible in each vertical column. Internal ceilings, recessed terraces, and stacked shallow roofs remain invisible to the optimizer even when they are the surfaces that most need alignment.
-
-This paper argues that the right next step is not full volumetric deformation. Instead, we introduce a rank-2 FlexField that is just expressive enough to control two surface families while staying anchored in least-squares solves, closed-form derivative checks, and mainstream slicer integration.

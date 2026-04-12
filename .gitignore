@@ -22,7 +22,7 @@ htmlcov/
 .vscode/
 .idea/
 
-# Generated slicer/QuickCurve outputs
+# Generated slicer/flexislicer outputs
 out_*/
 out_*.json
 

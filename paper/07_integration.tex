@@ -1,5 +1,0 @@
-\section{Slicer Integration}
-
-The pipeline integrates with existing planar slicers through three steps. First, the mesh is warped into slicer space by numerically inverting `z = z_s + D(x,y,z_s)` per vertex. Second, a standard slicer generates planar G-code on the deformed mesh. Third, the resulting toolpaths are mapped back to real-space Z using the forward field.
-
-This wrapper preserves mature path planning, seam logic, and general slicer usability. The integration is intentionally conservative: we retain existing move segmentation, compensate extrusion by real-to-sliced path-length ratio, and preserve early bottom layers as planar before blending into full non-planar warping.
